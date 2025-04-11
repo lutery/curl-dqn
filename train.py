@@ -18,6 +18,17 @@ from video import VideoRecorder
 from curl_sac import CurlSacAgent
 from torchvision import transforms
 
+'''
+CUDA_VISIBLE_DEVICES=0 python train.py \
+    --domain_name cartpole \
+    --task_name swingup \
+    --encoder_type pixel \
+    --action_repeat 8 \
+    --save_tb --pre_transform_image_size 100 --image_size 84 \
+    --work_dir ./tmp \
+    --agent curl_sac --frame_stack 3 \
+    --seed -1 --critic_lr 1e-3 --actor_lr 1e-3 --eval_freq 10000 --batch_size 128 --num_train_steps 1000000 
+'''
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -79,9 +90,22 @@ def parse_args():
 
 
 def evaluate(env, agent, video, num_episodes, L, step, args):
+    '''
+    env: 环境
+    agent: 代理器
+    video: 视频记录器
+    num_episodes: 评估的轮数
+    L: 日志记录器
+    step: 当前步数
+    args: 参数
+    '''
+
     all_ep_rewards = []
 
     def run_eval_loop(sample_stochastically=True):
+        '''
+        param sample_stochastically: 验证时如何选择动作，时随机还是最大概率
+        '''
         start_time = time.time()
         prefix = 'stochastic_' if sample_stochastically else ''
         for i in range(num_episodes):
@@ -98,6 +122,7 @@ def evaluate(env, agent, video, num_episodes, L, step, args):
                         action = agent.sample_action(obs)
                     else:
                         action = agent.select_action(obs)
+                # 执行动作
                 obs, reward, done, _ = env.step(action)
                 video.record(env)
                 episode_reward += reward
@@ -117,6 +142,10 @@ def evaluate(env, agent, video, num_episodes, L, step, args):
 
 
 def make_agent(obs_shape, action_shape, args, device):
+    '''
+    创建代理器
+    '''
+
     if args.agent == 'curl_sac':
         return CurlSacAgent(
             obs_shape=obs_shape,
@@ -156,20 +185,21 @@ def main():
         args.__dict__["seed"] = np.random.randint(1,1000000)
     utils.set_seed_everywhere(args.seed)
     env = dmc2gym.make(
-        domain_name=args.domain_name,
-        task_name=args.task_name,
-        seed=args.seed,
-        visualize_reward=False,
-        from_pixels=(args.encoder_type == 'pixel'),
-        height=args.pre_transform_image_size,
-        width=args.pre_transform_image_size,
-        frame_skip=args.action_repeat
+        domain_name=args.domain_name, # 游戏名称
+        task_name=args.task_name, # 任务名称
+        seed=args.seed, # 随机种子
+        visualize_reward=False, # 是否可视化奖励
+        from_pixels=(args.encoder_type == 'pixel'), # 是否使用像素作为输入
+        height=args.pre_transform_image_size, # 输入图像的高度
+        width=args.pre_transform_image_size, # 输入图像的宽度
+        frame_skip=args.action_repeat # 动作重复次数
     )
  
     env.seed(args.seed)
 
     # stack several consecutive frames together
     if args.encoder_type == 'pixel':
+        # 帧堆叠
         env = utils.FrameStack(env, k=args.frame_stack)
     
     # make directory
@@ -178,29 +208,39 @@ def main():
     env_name = args.domain_name + '-' + args.task_name
     exp_name = env_name + '-' + ts + '-im' + str(args.image_size) +'-b'  \
     + str(args.batch_size) + '-s' + str(args.seed)  + '-' + args.encoder_type
+    # 保存目录
     args.work_dir = args.work_dir + '/'  + exp_name
 
     utils.make_dir(args.work_dir)
+    # 视频保存目录
     video_dir = utils.make_dir(os.path.join(args.work_dir, 'video'))
+    # 模型保存目录
     model_dir = utils.make_dir(os.path.join(args.work_dir, 'model'))
+    # 日志保存目录
     buffer_dir = utils.make_dir(os.path.join(args.work_dir, 'buffer'))
 
+    # 这里是记录游戏的画面
     video = VideoRecorder(video_dir if args.save_video else None)
-
+    
     with open(os.path.join(args.work_dir, 'args.json'), 'w') as f:
         json.dump(vars(args), f, sort_keys=True, indent=4)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+    # 动作空间的尺寸
     action_shape = env.action_space.shape
 
+    # 观察空间
     if args.encoder_type == 'pixel':
+        # 观察空间分真实话环境的shape以及curl aug的shape
         obs_shape = (3*args.frame_stack, args.image_size, args.image_size)
         pre_aug_obs_shape = (3*args.frame_stack,args.pre_transform_image_size,args.pre_transform_image_size)
     else:
+        # 如果不是像素空间则真实空间的shape和curl aug的shape
         obs_shape = env.observation_space.shape
         pre_aug_obs_shape = obs_shape
-
+    
+    # 重放缓冲区，无优先级，存储的数据是连续的
     replay_buffer = utils.ReplayBuffer(
         obs_shape=pre_aug_obs_shape,
         action_shape=action_shape,
@@ -210,6 +250,7 @@ def main():
         image_size=args.image_size,
     )
 
+    # 环境训练网络的代理器
     agent = make_agent(
         obs_shape=obs_shape,
         action_shape=action_shape,
@@ -217,24 +258,32 @@ def main():
         device=device
     )
 
+    # 日志文件
     L = Logger(args.work_dir, use_tb=args.save_tb)
 
+    # 经过的生命周期数、本生命周期的奖励、是否已经结束
     episode, episode_reward, done = 0, 0, True
     start_time = time.time()
 
+    # 开始训练
     for step in range(args.num_train_steps):
         # evaluate agent periodically
 
         if step % args.eval_freq == 0:
+            # 验证模型
             L.log('eval/episode', episode, step)
             evaluate(env, agent, video, args.num_eval_episodes, L, step,args)
             if args.save_model:
+                # 保存验证后的模型
                 agent.save_curl(model_dir, step)
             if args.save_buffer:
+                # 是否保存buffer，我看训练参数是默认不保存的，todo 试试不保存
                 replay_buffer.save(buffer_dir)
 
         if done:
+            # 如果已经结束
             if step > 0:
+                # 记录日志，打印经过的时间和步数
                 if step % args.log_interval == 0:
                     L.log('train/duration', time.time() - start_time, step)
                     L.dump(step)
@@ -242,6 +291,7 @@ def main():
             if step % args.log_interval == 0:
                 L.log('train/episode_reward', episode_reward, step)
 
+            # 重置游戏环境
             obs = env.reset()
             done = False
             episode_reward = 0
@@ -252,17 +302,21 @@ def main():
 
         # sample action for data collection
         if step < args.init_steps:
+            # 一开始采用随机动作
             action = env.action_space.sample()
         else:
+            # 后续采用动作随机采样
             with utils.eval_mode(agent):
                 action = agent.sample_action(obs)
 
         # run training update
         if step >= args.init_steps:
+            # 到达一定步数则开始进行更新网络
             num_updates = 1 
             for _ in range(num_updates):
                 agent.update(replay_buffer, L, step)
 
+        # 边训练边采样，保存到缓冲区
         next_obs, reward, done, _ = env.step(action)
 
         # allow infinit bootstrap

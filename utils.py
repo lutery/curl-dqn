@@ -70,14 +70,26 @@ def preprocess_obs(obs, bits=5):
 class ReplayBuffer(Dataset):
     """Buffer to store environment transitions."""
     def __init__(self, obs_shape, action_shape, capacity, batch_size, device,image_size=84,transform=None):
+        '''
+        params obs_shape: 观察空间
+        params action_shape: 动作空间
+        params capacity: 容量
+        params batch_size: 每次采集的数据量
+        params device: 设备
+        prams image_size: 图像尺寸
+        params transform: 默认为空
+        '''
+
         self.capacity = capacity
         self.batch_size = batch_size
         self.device = device
         self.image_size = image_size
         self.transform = transform
         # the proprioceptive obs is stored as float32, pixels obs as uint8
+        # 观察空间的数据类型，如果只是一个向量则为float32，不是则为像素
         obs_dtype = np.float32 if len(obs_shape) == 1 else np.uint8
         
+        # 直接创建存储空间，难道要连续的？ todo
         self.obses = np.empty((capacity, *obs_shape), dtype=obs_dtype)
         self.next_obses = np.empty((capacity, *obs_shape), dtype=obs_dtype)
         self.actions = np.empty((capacity, *action_shape), dtype=np.float32)
@@ -97,13 +109,22 @@ class ReplayBuffer(Dataset):
         np.copyto(self.actions[self.idx], action)
         np.copyto(self.rewards[self.idx], reward)
         np.copyto(self.next_obses[self.idx], next_obs)
-        np.copyto(self.not_dones[self.idx], not done)
+        np.copyto(self.not_dones[self.idx], 1.0 if not done else 0.0)
 
+        # 在add里面看到是存储连续的，但是要注意如果图片容量后，idx前后的数据就不是连续的
         self.idx = (self.idx + 1) % self.capacity
         self.full = self.full or self.idx == 0
 
     def sample_proprio(self):
-        
+        '''
+        线性空间的采样方法
+
+        return: 观察空间（tensor），动作采样（tensor)，奖励，下一个状态，是否未结束
+        '''
+
+        # 随机采样起始idx，好像也没考虑到idx越界的情况
+        # 采样batch_size个数据
+        # 注意，这里采样的时随机的，而不用连续的样本数据
         idxs = np.random.randint(
             0, self.capacity if self.full else self.idx, size=self.batch_size
         )
@@ -121,8 +142,16 @@ class ReplayBuffer(Dataset):
         return obses, actions, rewards, next_obses, not_dones
 
     def sample_cpc(self):
+        '''
+        像素空间的采样方法
+
+        return: 观察空间（tensor），动作采样（tensor)，奖励，下一个状态，是否未结束，一些参数todo作用
+        '''
 
         start = time.time()
+        # 随机采样起始idx，好像也没考虑到idx越界的情况
+        # 采样batch_size个数据
+        # 注意，这里采样的时随机的，而不用连续的样本数据
         idxs = np.random.randint(
             0, self.capacity if self.full else self.idx, size=self.batch_size
         )
@@ -131,6 +160,7 @@ class ReplayBuffer(Dataset):
         next_obses = self.next_obses[idxs]
         pos = obses.copy()
 
+        # 对观察环境进行裁剪
         obses = random_crop(obses, self.image_size)
         next_obses = random_crop(next_obses, self.image_size)
         pos = random_crop(pos, self.image_size)
@@ -144,6 +174,7 @@ class ReplayBuffer(Dataset):
         not_dones = torch.as_tensor(self.not_dones[idxs], device=self.device)
 
         pos = torch.as_tensor(pos, device=self.device).float()
+        # todo 这个时什么
         cpc_kwargs = dict(obs_anchor=obses, obs_pos=pos,
                           time_anchor=None, time_pos=None)
 
@@ -251,6 +282,9 @@ def random_crop(imgs, output_size):
     return cropped_imgs
 
 def center_crop_image(image, output_size):
+    '''
+    像素空间中心裁剪图片，todo 会不会有影响
+    '''
     h, w = image.shape[1:]
     new_h, new_w = output_size, output_size
 
