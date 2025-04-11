@@ -313,6 +313,9 @@ class CURL(nn.Module):
     def compute_logits(self, z_a, z_pos):
         """
         todo 这里计算了CURL损失，了解原理
+        z_a：当前状态的编码。
+        z_pos：目标状态的编码
+
         Uses logits trick for CURL:
         - compute (B,B) matrix z_a (W z_pos.T)
         - positives are all diagonal elements
@@ -564,6 +567,9 @@ class CurlSacAgent(object):
         # 得到预测的小梯度
         actor_Q = torch.min(actor_Q1, actor_Q2)
         # todo 预测的对数概率和评价网络的Q值要接近？
+        # actor_Q 代表策略能获得的价值,通过最小化actor_Q,使得网络可以选择
+        # 最大化Q值的动作
+        #  self.alpha.detach() * log_pi 代表对动作熵的鼓励项
         actor_loss = (self.alpha.detach() * log_pi - actor_Q).mean()
 
         if step % self.log_interval == 0:
@@ -602,7 +608,21 @@ class CurlSacAgent(object):
         z_pos = self.CURL.encode(obs_pos, ema=True)
         
         logits = self.CURL.compute_logits(z_a, z_pos)
-        # 也是和另一个CURL是一个顺序的labels todo 为啥
+        # 也是和另一个CURL是一个顺序的labels todo 为啥 看md文件
+        # 这里实际上是仿造了一个one-hot的标签
+        # logits时产生一个(B,B)的矩阵，其中对角线时正样本
+        # 如：
+        # 
+        '''
+        [[ 10.0,  -5.0,  -5.0,  -5.0],  
+            [ -5.0,  10.0,  -5.0,  -5.0],
+            [ -5.0,  -5.0,  10.0,  -5.0],
+            [ -5.0,  -5.0,  -5.0,  10.0]]
+
+        我们期望的就是对角线的值越大越好，非对角线的值越小越好，这样z_a
+        和z_pos之间的差异就越小
+        使得评价模型能够学习到更加准确的特征表示，从而提高模型的准确率和性能
+        '''
         labels = torch.arange(logits.shape[0]).long().to(self.device)
         loss = self.cross_entropy_loss(logits, labels)
         
