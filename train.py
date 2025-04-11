@@ -28,7 +28,11 @@ CUDA_VISIBLE_DEVICES=0 python train.py \
     --work_dir ./tmp \
     --agent curl_sac --frame_stack 3 \
     --seed -1 --critic_lr 1e-3 --actor_lr 1e-3 --eval_freq 10000 --batch_size 128 --num_train_steps 1000000 
-'''
+
+    为什么预测的对数概率和评价网络的Q值要接近
+    讲解一下compute_logits
+    CURL是如何控制动作网络和评价网络
+    '''
 
 def parse_args():
     parser = argparse.ArgumentParser()
